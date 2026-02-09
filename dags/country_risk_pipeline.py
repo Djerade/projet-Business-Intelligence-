@@ -129,6 +129,141 @@ def transform_data(**context):
     return cleaned_filepath
 
 
+def compute_risk_scores(**context):
+    """Compute risk scores for countries."""
+    import logging
+    import pandas as pd
+    from transformations.compute_indicators import (
+        compute_trade_balance_absolute,
+        compute_debt_absolute,
+        prepare_indicators_for_scoring
+    )
+    from transformations.risk_score import compute_comprehensive_risk
+    
+    logger = logging.getLogger(__name__)
+    
+    # Pull cleaned data filepath from XCom
+    ti = context['ti']
+    cleaned_filepath = ti.xcom_pull(key='cleaned_data_filepath', task_ids='transform_data')
+    
+    if not cleaned_filepath or not os.path.exists(cleaned_filepath):
+        raise ValueError("Cleaned data file not found")
+    
+    # Load cleaned data
+    df = pd.read_parquet(cleaned_filepath)
+    logger.info(f"Loaded cleaned data: {df.shape}")
+    
+    # Compute derived indicators
+    df = compute_trade_balance_absolute(df)
+    df = compute_debt_absolute(df)
+    
+    # Prepare for scoring
+    df_scoring = prepare_indicators_for_scoring(df)
+    
+    # Compute risk scores
+    df_risk = compute_comprehensive_risk(df_scoring)
+    
+    # Save risk-scored data
+    from transformations.clean_macro import save_cleaned_data
+    risk_filepath = save_cleaned_data(df_risk, filename=f"risk_scored_data_{datetime.now().strftime('%Y%m%d_%H%M%S')}.parquet")
+    logger.info(f"Risk-scored data saved to: {risk_filepath}")
+    
+    # Push to XCom
+    context['ti'].xcom_push(key='risk_data_filepath', value=risk_filepath)
+    
+    return risk_filepath
+
+def load_dimensions(**context):
+    """Load dimension tables into data warehouse."""
+    import logging
+    from warehouse.load_dims import DimensionLoader, create_sample_dimensions
+    
+    logger = logging.getLogger(__name__)
+    
+    # Initialize dimension loader
+    loader = DimensionLoader()
+    
+    # Create sample dimensions (in production, this would load from a source)
+    create_sample_dimensions(loader)
+    
+    logger.info("Dimensions loaded successfully")
+
+
+
+def load_facts(**context):
+    """Load fact table into data warehouse."""
+    import logging
+    import pandas as pd
+    from warehouse.load_facts import FactLoader
+    
+    logger = logging.getLogger(__name__)
+    
+    # Pull risk data filepath from XCom
+    ti = context['ti']
+    risk_filepath = ti.xcom_pull(key='risk_data_filepath', task_ids='compute_risk_scores')
+    
+    if not risk_filepath or not os.path.exists(risk_filepath):
+        raise ValueError("Risk data file not found")
+    
+    # Load risk data
+    df = pd.read_parquet(risk_filepath)
+    logger.info(f"Loading {df.shape[0]} records into fact table")
+    
+    # Initialize fact loader
+    loader = FactLoader()
+    
+    # Load facts
+    loader.load_fact_country_risk(df, data_source='airflow_pipeline')
+    
+    logger.info("Fact table loaded successfully")
+
+
+
+def validate_data_quality(**context):
+    """Validate data quality after loading."""
+    import logging
+    from sqlalchemy import create_engine, text
+    import os
+    
+    logger = logging.getLogger(__name__)
+    
+    # Connect to database
+    db_host = os.getenv('DB_HOST', 'postgres')
+    db_port = os.getenv('DB_PORT', '5432')
+    db_name = os.getenv('DB_NAME', 'country_risk_dw')
+    db_user = os.getenv('DB_USER', 'postgres')
+    db_password = os.getenv('DB_PASSWORD', 'postgres')
+    
+    connection_string = f"postgresql://{db_user}:{db_password}@{db_host}:{db_port}/{db_name}"
+    engine = create_engine(connection_string)
+    
+    # Run data quality checks
+    with engine.connect() as conn:
+        # Check record count
+        result = conn.execute(text("SELECT COUNT(*) FROM fact_country_risk"))
+        count = result.scalar()
+        logger.info(f"Total records in fact_country_risk: {count}")
+        
+        if count == 0:
+            raise ValueError("No records found in fact_country_risk")
+        
+        # Check for null risk scores
+        result = conn.execute(text("""
+            SELECT COUNT(*) FROM fact_country_risk 
+            WHERE risk_score IS NULL
+        """))
+        null_count = result.scalar()
+        logger.info(f"Records with null risk_score: {null_count}")
+        
+        # Check date range
+        result = conn.execute(text("""
+            SELECT MIN(year), MAX(year) FROM fact_country_risk
+        """))
+        min_year, max_year = result.fetchone()
+        logger.info(f"Data year range: {min_year} - {max_year}")
+    
+    logger.info("Data quality validation completed successfully")
+
 
 task_ingest_world_bank = PythonOperator(
     task_id='ingest_world_bank',
@@ -142,5 +277,31 @@ task_transform = PythonOperator(
     dag=dag
 )
 
+task_compute_risk = PythonOperator(
+    task_id='compute_risk_scores',
+    python_callable=compute_risk_scores,
+    dag=dag
+)
 
-task_ingest_world_bank >> task_transform
+
+task_load_dims = PythonOperator(
+    task_id='load_dimensions',
+    python_callable=load_dimensions,
+    dag=dag
+)
+
+task_load_facts = PythonOperator(
+    task_id='load_facts',
+    python_callable=load_facts,
+    dag=dag
+)
+
+
+task_validate = PythonOperator(
+    task_id='validate_data_quality',
+    python_callable=validate_data_quality,
+    dag=dag
+)
+
+
+task_ingest_world_bank >> task_transform >> task_compute_risk >> task_load_dims >> task_load_facts >> task_validate
