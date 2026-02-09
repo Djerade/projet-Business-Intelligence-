@@ -209,7 +209,8 @@ def calculate_risk_trend(df: pd.DataFrame, window: int = 3) -> pd.DataFrame:
     if 'risk_score' not in df.columns:
         logger.warning("risk_score column not found")
         return df
-    
+        
+    df = df.loc[:, ~df.columns.duplicated()]
     # Calculate rolling average and compare with current value
     df = df.sort_values(['country_code', 'year'])
     

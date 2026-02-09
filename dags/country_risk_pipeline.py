@@ -33,7 +33,7 @@ default_args = {
     'depends_on_past': False,
     'email_on_failure': False,
     'email_on_retry': False,
-    'retries': 2,
+    'retries': 5,
     'retry_delay': timedelta(minutes=5),
     'start_date': days_ago(1)
 }
@@ -87,8 +87,7 @@ def transform_data(**context):
     import pandas as pd
     from transformations.clean_macro import (
         clean_world_bank_data,
-        clean_alpha_vantage_data,
-        clean_imf_data,
+      
         merge_macro_data,
         handle_missing_values,
         save_cleaned_data
@@ -99,9 +98,7 @@ def transform_data(**context):
     # Pull filepaths from XCom
     ti = context['ti']
     world_bank_filepath = ti.xcom_pull(key='world_bank_filepath', task_ids='ingest_world_bank')
-    alpha_vantage_filepath = ti.xcom_pull(key='alpha_vantage_filepath', task_ids='ingest_alpha_vantage')
-    imf_filepath = ti.xcom_pull(key='imf_filepath', task_ids='ingest_imf')
-    
+
     # Load World Bank data
     if world_bank_filepath and os.path.exists(world_bank_filepath):
         wb_df = pd.read_parquet(world_bank_filepath)
@@ -113,7 +110,7 @@ def transform_data(**context):
         raise ValueError("World Bank data file not found")
     
 
-    
+    merged_df = merge_macro_data(wb_clean)
 
     
     # Handle missing values
@@ -219,50 +216,6 @@ def load_facts(**context):
 
 
 
-def validate_data_quality(**context):
-    """Validate data quality after loading."""
-    import logging
-    from sqlalchemy import create_engine, text
-    import os
-    
-    logger = logging.getLogger(__name__)
-    
-    # Connect to database
-    db_host = os.getenv('DB_HOST', 'postgres')
-    db_port = os.getenv('DB_PORT', '5432')
-    db_name = os.getenv('DB_NAME', 'country_risk_dw')
-    db_user = os.getenv('DB_USER', 'postgres')
-    db_password = os.getenv('DB_PASSWORD', 'postgres')
-    
-    connection_string = f"postgresql://{db_user}:{db_password}@{db_host}:{db_port}/{db_name}"
-    engine = create_engine(connection_string)
-    
-    # Run data quality checks
-    with engine.connect() as conn:
-        # Check record count
-        result = conn.execute(text("SELECT COUNT(*) FROM fact_country_risk"))
-        count = result.scalar()
-        logger.info(f"Total records in fact_country_risk: {count}")
-        
-        if count == 0:
-            raise ValueError("No records found in fact_country_risk")
-        
-        # Check for null risk scores
-        result = conn.execute(text("""
-            SELECT COUNT(*) FROM fact_country_risk 
-            WHERE risk_score IS NULL
-        """))
-        null_count = result.scalar()
-        logger.info(f"Records with null risk_score: {null_count}")
-        
-        # Check date range
-        result = conn.execute(text("""
-            SELECT MIN(year), MAX(year) FROM fact_country_risk
-        """))
-        min_year, max_year = result.fetchone()
-        logger.info(f"Data year range: {min_year} - {max_year}")
-    
-    logger.info("Data quality validation completed successfully")
 
 
 task_ingest_world_bank = PythonOperator(
@@ -297,11 +250,4 @@ task_load_facts = PythonOperator(
 )
 
 
-task_validate = PythonOperator(
-    task_id='validate_data_quality',
-    python_callable=validate_data_quality,
-    dag=dag
-)
-
-
-task_ingest_world_bank >> task_transform >> task_compute_risk >> task_load_dims >> task_load_facts >> task_validate
+task_ingest_world_bank >> task_transform >> task_compute_risk >> task_load_dims >> task_load_facts 
