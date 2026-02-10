@@ -16,6 +16,12 @@ from sqlalchemy import MetaData
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)  
 
+
+if not logger.handlers:
+    ch = logging.StreamHandler()
+    ch.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+    logger.addHandler(ch)
+
 class DimensionLoader:
     """
     Class for loading dimension tables.
@@ -34,7 +40,7 @@ class DimensionLoader:
             connection_string = (
                 f"postgresql://{db_user}:{db_password}@{db_host}:{db_port}/{db_name}"
             )
-
+        self.logger = logging.getLogger(__name__)
         self.engine = create_engine(connection_string)
         self.connection_string = connection_string
     
@@ -95,7 +101,7 @@ class DimensionLoader:
 
 
 
-        logger = logging.getLogger(__name__)
+
 
     def load_regions(self, regions_df: pd.DataFrame) -> None:
             """
