@@ -17,7 +17,6 @@ from typing import List, Dict, Optional
 from datetime import datetime, timedelta
 from ingestion.utils import (
     make_api_request,
-    save_to_parquet,
     get_data_path,
     get_env_var,
     format_date_for_api
@@ -30,12 +29,12 @@ WORLD_BANK_BASE_URL = "https://api.worldbank.org/v2"
 
 # Indicator codes for World Bank API
 INDICATORS = {
-    'gdp': 'NY.GDP.MKTP.CD',  # GDP (current US$)
-    'gdp_growth': 'NY.GDP.MKTP.KD.ZG',  # GDP growth (annual %)
-    'inflation': 'FP.CPI.TOTL.ZG',  # Inflation, consumer prices (annual %)
-    'debt_gdp': 'GC.DOD.TOTL.GD.ZS',  # Central government debt, total (% of GDP)
-    'trade_balance': 'NE.TRD.GNFS.ZS',  # Trade (% of GDP)
-    'current_account': 'BN.CAB.XOKA.GD.ZS'  # Current account balance (% of GDP)
+    'gdp': 'NY.GDP.MKTP.CD',  # PIB
+    'gdp_growth': 'NY.GDP.MKTP.KD.ZG',  #Croissance du PIB
+    'inflation': 'FP.CPI.TOTL.ZG',  # Inflation
+    'debt_gdp': 'GC.DOD.TOTL.GD.ZS',  # Dette publique (% du PIB)
+    'trade_balance': 'NE.TRD.GNFS.ZS',  # Commerce extérieur (% du PIB)
+    'current_account': 'BN.CAB.XOKA.GD.ZS'  # Compte courant (% du PIB)
 }
 
 
@@ -213,13 +212,15 @@ class WorldBankIngestion:
         timestamp = timestamp or datetime.now()
         timestamp_str = timestamp.strftime('%Y%m%d_%H%M%S')
         
+        # Save as CSV in raw data lake
         if country_code:
-            filename = f"world_bank_{country_code}_{timestamp_str}.parquet"
+            filename = f"world_bank_{country_code}_{timestamp_str}.csv"
         else:
-            filename = f"world_bank_all_{timestamp_str}.parquet"
+            filename = f"world_bank_all_{timestamp_str}.csv"
         
         filepath = get_data_path('raw', filename)
-        save_to_parquet(df, filepath)
+        df.to_csv(filepath, index=False)
+        logger.info(f"World Bank data saved to CSV at: {filepath}")
         
         return filepath
     

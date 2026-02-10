@@ -73,7 +73,7 @@ def merge_macro_data(
 
 ) -> pd.DataFrame:
     """
-    Merge World Bank and Alpha Vantage data.
+    Merge World Bank an
     
     Args:
         world_bank_df: Cleaned World Bank DataFrame
@@ -85,22 +85,8 @@ def merge_macro_data(
     if world_bank_df.empty:
         logger.warning("World Bank DataFrame is empty")
 
-    
-
-    
-    # Merge on country_code and year
-    # For FX data, we'll use the average volatility for the year
-
-
-
-    # Merge
-
-
-
     merged_df = world_bank_df.sort_values(['country_code', 'year']).reset_index(drop=True)
-    
- 
-    
+
     logger.info(f"Merged data: {merged_df.shape[0]} records")
     
     return merged_df

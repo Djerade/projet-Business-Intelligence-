@@ -142,6 +142,83 @@ def compute_year_over_year_changes(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def compute_derived_risk_features(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Compute additional derived features to support deeper risk analysis:
+    - growth_volatility: rolling std of GDP growth (e.g. 5 ans)
+    - negative_growth_streak: nombre d'années consécutives de croissance négative
+    - prolonged_negative_growth_flag: True si streak >= 2
+    - gdp_growth_lag1: croissance de l'année N-1
+    - early_warning_flag: signaux précoces de détérioration (chute de croissance ou hausse forte de dette / inflation)
+    """
+    df = df.copy()
+    if 'country_code' not in df.columns or 'year' not in df.columns:
+        return df
+
+    # Assurer l'unicité des colonnes avant les opérations groupby/sort
+    df = df.loc[:, ~df.columns.duplicated()]
+
+    df = df.sort_values(['country_code', 'year'])
+
+    # Lag de croissance (indicateur avancé)
+    if 'gdp_growth_pct' in df.columns:
+        df['gdp_growth_lag1'] = df.groupby('country_code')['gdp_growth_pct'].shift(1)
+
+        # Volatilité de la croissance sur 5 ans
+        df['growth_volatility'] = (
+            df.groupby('country_code')['gdp_growth_pct']
+            .transform(lambda x: x.rolling(window=5, min_periods=2).std())
+        )
+
+        # Streak de croissance négative
+        def _negative_streak(x):
+            streak = 0
+            res = []
+            for val in x:
+                if pd.notna(val) and val < 0:
+                    streak += 1
+                else:
+                    streak = 0
+                res.append(streak)
+            return pd.Series(res, index=x.index)
+
+        df['negative_growth_streak'] = (
+            df.groupby('country_code')['gdp_growth_pct'].apply(_negative_streak).reset_index(level=0, drop=True)
+        )
+        df['prolonged_negative_growth_flag'] = df['negative_growth_streak'] >= 2
+
+    # Signaux précoces (early warning) par pays (diff année à année)
+    conds = []
+    if 'gdp_growth_pct' in df.columns:
+        conds.append(
+            df.groupby('country_code')['gdp_growth_pct']
+            .diff()
+            .le(-2)
+        )  # chute >= 2 points
+    if 'debt_gdp_pct' in df.columns:
+        conds.append(
+            df.groupby('country_code')['debt_gdp_pct']
+            .diff()
+            .ge(5)
+        )  # +5 pts de dette/PIB
+    if 'inflation_pct' in df.columns:
+        conds.append(
+            df.groupby('country_code')['inflation_pct']
+            .diff()
+            .ge(3)
+        )  # +3 pts d'inflation
+
+    if conds:
+        combined = conds[0]
+        for c in conds[1:]:
+            combined = combined | c
+        df['early_warning_flag'] = combined.fillna(False)
+    else:
+        df['early_warning_flag'] = False
+
+    return df
+
+
 def prepare_indicators_for_scoring(df: pd.DataFrame) -> pd.DataFrame:
     """
     Prepare indicators for risk score calculation.
@@ -178,8 +255,10 @@ def prepare_indicators_for_scoring(df: pd.DataFrame) -> pd.DataFrame:
         for col in missing_cols:
             df[col] = np.nan
     
-    # Select only relevant columns
-    scoring_cols = ['country_code', 'year'] + list(required_cols.values())
+    # Select only relevant columns, en évitant les doublons
+    base_cols = ['country_code', 'year']
+    indicator_cols = list(required_cols.values())
+    scoring_cols = base_cols + [c for c in indicator_cols if c not in base_cols]
     available_cols = [col for col in scoring_cols if col in df.columns]
     
     df_scoring = df[available_cols].copy()
@@ -189,5 +268,8 @@ def prepare_indicators_for_scoring(df: pd.DataFrame) -> pd.DataFrame:
     df_scoring = df_scoring[df_scoring[indicator_cols].notna().any(axis=1)]
     
     logger.info(f"Prepared {df_scoring.shape[0]} records for risk scoring")
-    
+
+    # Enrichir avec les features dérivées pour l'analyse avancée
+    df_scoring = compute_derived_risk_features(df_scoring)
+
     return df_scoring

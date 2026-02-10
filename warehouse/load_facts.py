@@ -8,6 +8,7 @@ import pandas as pd
 from sqlalchemy import create_engine, text
 from typing import Optional
 from datetime import datetime
+from sqlalchemy.dialects.postgresql import insert
 
 logger = logging.getLogger(__name__)
 
@@ -39,29 +40,89 @@ class FactLoader:
     
     def get_date_key(self, date: datetime) -> int:
         """
-        Get or create date key for a given date.
-        
-        Args:
-            date: Datetime object
-            
-        Returns:
-            Date key (YYYYMMDD format)
+        Ensure a date exists in dim_date and return its date_key.
+        This version inserts all NOT NULL columns expected by dim_date.
         """
+        # Normalize to Python datetime (can be pandas.Timestamp)
+        if hasattr(date, "to_pydatetime"):
+            date = date.to_pydatetime()
+
         date_key = int(date.strftime('%Y%m%d'))
-        
-        # Ensure date exists in dim_date
-        with self.engine.connect() as conn:
-            result = conn.execute(text("""
-                SELECT date_key FROM dim_date WHERE date_key = :date_key
-            """), {'date_key': date_key})
-            
-            if result.fetchone() is None:
-                # Insert date into dim_date using the function
-                conn.execute(text("SELECT get_date_key(:date)"), {'date': date.date()})
-                conn.commit()
-        
+
+        year = date.year
+        month = date.month
+        day = date.day
+        # Quarter: 1..4
+        quarter = (month - 1) // 3 + 1
+        # Monday=0, Sunday=6
+        day_of_week = date.weekday()
+        day_name = date.strftime('%A')
+        month_name = date.strftime('%B')
+        is_weekend = day_of_week in (5, 6)
+
+        # Month / quarter / year end flags
+        from datetime import timedelta
+        next_day = date + timedelta(days=1)
+        is_month_end = next_day.month != month
+        is_quarter_end = (is_month_end and month in (3, 6, 9, 12))
+        is_year_end = (is_month_end and month == 12)
+
+        with self.engine.begin() as conn:
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO dim_date (
+                        date_key,
+                        date,
+                        year,
+                        quarter,
+                        month,
+                        month_name,
+                        day_of_month,
+                        day_of_week,
+                        day_name,
+                        is_weekend,
+                        is_month_end,
+                        is_quarter_end,
+                        is_year_end
+                    )
+                    VALUES (
+                        :date_key,
+                        :date,
+                        :year,
+                        :quarter,
+                        :month,
+                        :month_name,
+                        :day_of_month,
+                        :day_of_week,
+                        :day_name,
+                        :is_weekend,
+                        :is_month_end,
+                        :is_quarter_end,
+                        :is_year_end
+                    )
+                    ON CONFLICT (date_key) DO NOTHING
+                    """
+                ),
+                {
+                    "date_key": date_key,
+                    "date": date,
+                    "year": year,
+                    "quarter": quarter,
+                    "month": month,
+                    "month_name": month_name,
+                    "day_of_month": day,
+                    "day_of_week": day_of_week,
+                    "day_name": day_name,
+                    "is_weekend": is_weekend,
+                    "is_month_end": is_month_end,
+                    "is_quarter_end": is_quarter_end,
+                    "is_year_end": is_year_end,
+                },
+            )
+
         return date_key
-    
+
     def load_fact_country_risk(self, df: pd.DataFrame, data_source: str = 'pipeline') -> None:
         """
         Load country risk facts into fact_country_risk.
@@ -153,8 +214,8 @@ class FactLoader:
             fact_df['month'] = fact_df['month'].fillna(1).astype(int)
         
         # Load to database (upsert)
-        # Use ON CONFLICT to handle duplicates
-        with self.engine.connect() as conn:
+        # Use ON CONFLICT to handle duplicates, transaction handled by begin()
+        with self.engine.begin() as conn:
             for _, row in fact_df.iterrows():
                 conn.execute(text("""
                     INSERT INTO fact_country_risk (
@@ -188,7 +249,8 @@ class FactLoader:
                         risk_trend = EXCLUDED.risk_trend,
                         data_source = EXCLUDED.data_source,
                         loaded_at = CURRENT_TIMESTAMP
-                """), {
+                """),
+                {
                     'country_code': row['country_code'],
                     'date_key': int(row['date_key']),
                     'year': int(row['year']),
@@ -205,9 +267,9 @@ class FactLoader:
                     'risk_score': float(row['risk_score']) if pd.notna(row['risk_score']) else None,
                     'risk_category': row['risk_category'] if pd.notna(row['risk_category']) else None,
                     'risk_trend': row['risk_trend'] if pd.notna(row['risk_trend']) else None,
-                    'data_source': row['data_source']
-                })
-            conn.commit()
+                    'data_source': row['data_source'],
+                },
+            )
         
         logger.info(f"Loaded {len(fact_df)} records into fact_country_risk")
 

@@ -178,15 +178,29 @@ class DimensionLoader:
                 'day_of_month', 'day_of_week', 'day_name',
                 'is_weekend', 'is_month_end', 'is_quarter_end', 'is_year_end'
             ]]
-            
-            # Load to database (ignore duplicates)
-            dates_df.to_sql(
-                'dim_date',
-                self.engine,
-                if_exists='append',
-                index=False
-            )
-            
+
+            # Load to database with upsert semantics (ignore duplicates on date_key)
+            with self.engine.begin() as conn:
+                for _, row in dates_df.iterrows():
+                    conn.execute(
+                        text(
+                            """
+                            INSERT INTO dim_date (
+                                date_key, date, year, quarter, month, month_name,
+                                day_of_month, day_of_week, day_name,
+                                is_weekend, is_month_end, is_quarter_end, is_year_end
+                            )
+                            VALUES (
+                                :date_key, :date, :year, :quarter, :month, :month_name,
+                                :day_of_month, :day_of_week, :day_name,
+                                :is_weekend, :is_month_end, :is_quarter_end, :is_year_end
+                            )
+                            ON CONFLICT (date_key) DO NOTHING
+                            """
+                        ),
+                        row.to_dict(),
+                    )
+
             logger.info(f"Ensured date dimension for {len(dates_df)} dates")
 
 

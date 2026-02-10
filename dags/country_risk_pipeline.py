@@ -101,7 +101,11 @@ def transform_data(**context):
 
     # Load World Bank data
     if world_bank_filepath and os.path.exists(world_bank_filepath):
-        wb_df = pd.read_parquet(world_bank_filepath)
+        # Support both CSV and Parquet input formats
+        if world_bank_filepath.endswith(".csv"):
+            wb_df = pd.read_csv(world_bank_filepath)
+        else:
+            wb_df = pd.read_parquet(world_bank_filepath)
         logger.info(f"Loaded World Bank data: {wb_df.shape}")
         
         # Clean World Bank data
